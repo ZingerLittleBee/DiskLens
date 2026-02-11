@@ -91,11 +91,6 @@ impl App {
         let mut scan_handle = Some(scan_handle);
 
         loop {
-            // Render
-            terminal.draw(|frame| {
-                renderer::render(frame, &self.state);
-            })?;
-
             tokio::select! {
                 // Terminal input events
                 input_event = input_rx.recv() => {
@@ -108,12 +103,14 @@ impl App {
                                 _ => {}
                             }
                         }
-                        Some(Event::Resize(_, _)) => {
-                            // Terminal resized; next loop iteration will re-render
-                        }
+                        Some(Event::Resize(_, _)) => {}
                         Some(_) => {}
                         None => return Ok(()),
                     }
+                    // Render immediately after input for responsiveness
+                    terminal.draw(|frame| {
+                        renderer::render(frame, &self.state);
+                    })?;
                 }
                 // Scan events
                 scan_event = event_rx.recv(), if scan_channel_open => {
@@ -143,8 +140,9 @@ impl App {
                             scan_channel_open = false;
                         }
                     }
+                    // No render here — wait for tick to avoid redundant redraws
                 }
-                // Periodic tick for progress updates during scan
+                // Periodic tick for rendering and progress updates
                 _ = tick_interval.tick() => {
                     if self.state.scan_result.is_none() {
                         let snapshot = progress.snapshot();
@@ -156,6 +154,10 @@ impl App {
                         );
                         self.state.error_count = snapshot.errors_count;
                     }
+                    // Render on tick (every 100ms)
+                    terminal.draw(|frame| {
+                        renderer::render(frame, &self.state);
+                    })?;
                 }
             }
 

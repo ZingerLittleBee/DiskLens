@@ -4,8 +4,6 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub enum Event {
     // Scan progress
-    FileScanned { path: PathBuf, size: u64 },
-    DirEntered { path: PathBuf },
     Progress { scanned: usize, total_size: u64, current_path: PathBuf },
 
     // Scan state

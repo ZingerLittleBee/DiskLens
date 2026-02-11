@@ -1,15 +1,11 @@
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 
 pub struct ProgressTracker {
     pub files_scanned: AtomicUsize,
     pub dirs_scanned: AtomicUsize,
     pub total_size: AtomicU64,
     pub errors_count: AtomicUsize,
-    pub current_path: Arc<RwLock<PathBuf>>,
     pub start_time: Instant,
 }
 
@@ -20,7 +16,6 @@ impl ProgressTracker {
             dirs_scanned: AtomicUsize::new(0),
             total_size: AtomicU64::new(0),
             errors_count: AtomicUsize::new(0),
-            current_path: Arc::new(RwLock::new(PathBuf::new())),
             start_time: Instant::now(),
         }
     }
@@ -39,11 +34,6 @@ impl ProgressTracker {
 
     pub fn increment_errors(&self) {
         self.errors_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub async fn set_current_path(&self, path: PathBuf) {
-        let mut current = self.current_path.write().await;
-        *current = path;
     }
 
     pub fn files_per_second(&self) -> f64 {
