@@ -209,8 +209,6 @@ fn scan_directory(
                     let modified = metadata.modified().ok();
                     #[cfg(unix)]
                     let inode = Some(std::os::unix::fs::MetadataExt::ino(&metadata));
-                    #[cfg(not(unix))]
-                    let inode = None;
                     let node = Node {
                         path: entry_path,
                         name: entry_name,
