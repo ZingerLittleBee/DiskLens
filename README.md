@@ -1,6 +1,8 @@
 # DiskLens
 
-高性能磁盘空间分析工具，基于 Rust 构建，提供 TUI 终端交互界面。
+Language: 🇺🇸 English | [🇨🇳 简体中文](./README.zh-CN.md)
+
+A high-performance disk space analyzer built with Rust, featuring a TUI terminal interface.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -21,92 +23,95 @@
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 功能特性
+## Features
 
-- **高速异步扫描** — 基于 tokio 异步运行时，自动检测存储类型（SSD/HDD）并调整并发度
-- **圆环图可视化** — 使用 Unicode 半块字符（▀▄█）绘制的彩色圆环图，直观展示磁盘占用比例
-- **钻取式导航** — Vim 风格快捷键，支持进入子目录、返回上级、跳转首尾项
-- **多排序模式** — 按大小、名称、修改时间排序，支持升序/降序切换
-- **智能合并** — 小文件/文件夹自动合并为 "Others"，可调节阈值（0.5%/1%/2%/5%）
-- **多格式导出** — JSON、Markdown、HTML（纯 CSS，暗色主题，可折叠目录树）
-- **缓存系统** — bincode 二进制缓存，基于 mtime + inode 的变更检测，原子写入
-- **错误容忍** — 权限拒绝、符号链接循环等错误不中断扫描，可按 `e` 查看完整错误列表
+- **Fast Async Scanning** — Powered by tokio async runtime, auto-detects storage type (SSD/HDD) and adjusts concurrency
+- **Ring Chart Visualization** — Colorful ring chart drawn with Unicode half-block characters (▀▄█) for intuitive disk usage display
+- **Drill-down Navigation** — Vim-style keybindings with directory drill-down, parent navigation, and jump-to-first/last
+- **Multiple Sort Modes** — Sort by size, name, or modification time with ascending/descending toggle
+- **Smart Merging** — Small files/folders auto-merged into "Others" with adjustable threshold (0.5%/1%/2%/5%)
+- **Multi-format Export** — JSON, Markdown, HTML (pure CSS, dark theme, collapsible directory tree)
+- **Cache System** — bincode binary cache with mtime + inode change detection and atomic writes
+- **Error Tolerant** — Permission denied, symlink cycles, and other errors won't interrupt scanning; press `e` to view the full error list
 
-## 安装
+## Installation
 
 ```bash
-# 从源码构建
-git clone https://github.com/your-username/disklens.git
-cd disklens
+# Install from crates.io
+cargo install disklens
+
+# Or build from source
+git clone https://github.com/ZingerLittleBee/DiskLens.git
+cd DiskLens
 cargo install --path .
 ```
 
-需要 Rust 2024 edition (nightly 或 1.85+)。
+Requires Rust 2024 edition (nightly or 1.85+).
 
-## 使用
+## Usage
 
 ```bash
-# 分析当前目录
+# Analyze current directory
 disklens
 
-# 分析指定路径
+# Analyze a specific path
 disklens /home/user/Documents
 
-# 限制扫描深度
+# Limit scan depth
 disklens -d 5 /path
 
-# 自定义并发数
+# Custom concurrency
 disklens -c 128 /path
 
-# 跟随符号链接
+# Follow symbolic links
 disklens --follow-symlinks /path
 
-# 非交互模式：直接导出 JSON
+# Non-interactive mode: export JSON directly
 disklens --export-json report.json /path
 ```
 
-## 快捷键
+## Keybindings
 
-### 导航
+### Navigation
 
-| 按键 | 功能 |
-|------|------|
-| `j` / `↓` | 向下移动 |
-| `k` / `↑` | 向上移动 |
-| `Enter` / `l` | 进入目录 |
-| `Backspace` / `h` | 返回上级 |
-| `gg` | 跳到首项 |
-| `G` | 跳到末项 |
-| `Tab` / `←` `→` | 切换焦点面板（圆环图 ↔ 文件列表）|
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `Enter` / `l` | Enter directory |
+| `Backspace` / `h` | Go to parent |
+| `gg` | Jump to first item |
+| `G` | Jump to last item |
+| `Tab` / `←` `→` | Switch focus panel (ring chart ↔ file list) |
 
-### 操作
+### Actions
 
-| 按键 | 功能 |
-|------|------|
-| `s` | 切换排序模式（大小 → 名称 → 修改时间）|
-| `t` | 切换合并阈值（0.5% → 1% → 2% → 5%）|
-| `x` | 导出 JSON 报告 |
-| `e` | 查看错误列表 |
-| `?` | 显示帮助面板 |
-| `q` / `Ctrl+C` | 退出 |
+| Key | Action |
+|-----|--------|
+| `s` | Cycle sort mode (size → name → modified time) |
+| `t` | Cycle merge threshold (0.5% → 1% → 2% → 5%) |
+| `x` | Export JSON report |
+| `e` | View error list |
+| `?` | Show help panel |
+| `q` / `Ctrl+C` | Quit |
 
-## 技术细节
+## Technical Details
 
-### 并发模型
+### Concurrency Model
 
-扫描器使用 `tokio::spawn` 对每个子目录进行异步递归扫描，通过 `Semaphore` 控制最大并发 I/O 数。并发度根据存储类型自动调整：
+The scanner uses `tokio::spawn` for async recursive scanning of each subdirectory, with a `Semaphore` controlling max concurrent I/O. Concurrency is auto-tuned by storage type:
 
-| 存储类型 | 并发数 |
-|----------|--------|
+| Storage Type | Concurrency |
+|-------------|-------------|
 | SSD / NVMe | 256 |
 | HDD | 32 |
-| 未知 | 64 |
+| Unknown | 64 |
 
-使用 `DashSet<PathBuf>` 追踪已访问路径，防止符号链接循环。进度更新通过原子计数器（`AtomicU64`/`AtomicUsize`）实现，避免锁竞争。
+A `DashSet<PathBuf>` tracks visited paths to prevent symlink cycles. Progress updates use atomic counters (`AtomicU64`/`AtomicUsize`) to avoid lock contention.
 
-### 缓存
+### Cache
 
-缓存位于 `~/Library/Caches/disklens`（macOS）或 `~/.cache/disklens`（Linux），使用 bincode 序列化。变更检测机制：mtime → inode（Unix）→ 不一致则重新扫描。写入采用 temp file + rename 的原子操作，确保中断安全。
+Cache is stored at `~/Library/Caches/disklens` (macOS) or `~/.cache/disklens` (Linux), serialized with bincode. Change detection: mtime → inode (Unix) → rescan on mismatch. Writes use temp file + rename for atomic operation, ensuring crash safety.
 
 ## License
 
