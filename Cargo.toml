@@ -1,6 +1,45 @@
 [package]
-name = "DiskLens"
+name = "disklens"
 version = "0.1.0"
 edition = "2024"
+description = "A high-performance disk space analyzer with TUI interface"
+license = "MIT"
 
 [dependencies]
+# UI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+dashmap = "6.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+serde_json = "1.0"
+
+# Error handling and logging
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+
+# Memory optimization
+smallvec = { version = "1.13", features = ["serde"] }
+compact_str = { version = "0.8", features = ["serde"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Unicode
+unicode-width = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
