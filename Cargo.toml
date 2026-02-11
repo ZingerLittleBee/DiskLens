@@ -1,7 +1,7 @@
 [package]
 name = "disklens"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "A high-performance disk space analyzer with TUI interface"
 license = "MIT"
 
