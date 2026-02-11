@@ -86,7 +86,9 @@ impl Cache {
 
         // Load and deserialize the scan result
         let cache_bytes = tokio::fs::read(&cache_file).await.ok()?;
-        bincode::deserialize(&cache_bytes).ok()
+        bincode::serde::decode_from_slice(&cache_bytes, bincode::config::standard())
+            .map(|(result, _)| result)
+            .ok()
     }
 
     pub async fn save(&self, result: &ScanResult) -> anyhow::Result<()> {
@@ -112,7 +114,7 @@ impl Cache {
         };
 
         // Serialize scan result with bincode
-        let cache_bytes = bincode::serialize(result)?;
+        let cache_bytes = bincode::serde::encode_to_vec(result, bincode::config::standard())?;
         let meta_bytes = serde_json::to_vec_pretty(&meta)?;
 
         // Atomic write: write to temp file, then rename
