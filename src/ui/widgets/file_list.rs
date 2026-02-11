@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, StatefulWidget, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::models::node::NodeType;
 use crate::ui::app_state::{SortMode, SortOrder};
@@ -137,8 +138,18 @@ impl StatefulWidget for FileList<'_> {
             let right_part = format!("  {}  {}", size_str, pct_str);
             let right_width = right_part.len();
             let name_max = (inner.width as usize).saturating_sub(right_width + 4); // 2 for leading space + icon + space
-            let truncated_name = if display_name.len() > name_max {
-                format!("{}...", &display_name[..name_max.saturating_sub(3)])
+            let display_width = display_name.width();
+            let truncated_name = if display_width > name_max {
+                let target = name_max.saturating_sub(3);
+                let mut w = 0;
+                let boundary = display_name.char_indices()
+                    .find(|&(_, c)| {
+                        w += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                        w > target
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(display_name.len());
+                format!("{}...", &display_name[..boundary])
             } else {
                 display_name
             };
@@ -158,7 +169,7 @@ impl StatefulWidget for FileList<'_> {
             };
 
             let name_part = format!(" {} {}", icon, truncated_name);
-            let padding = (inner.width as usize).saturating_sub(name_part.len() + right_part.len());
+            let padding = (inner.width as usize).saturating_sub(name_part.width() + right_part.len());
             let line_text = format!("{}{:pad$}{}", name_part, "", right_part, pad = padding);
 
             let line = Line::from(Span::styled(line_text, style));

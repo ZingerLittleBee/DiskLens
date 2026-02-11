@@ -4,6 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Widget,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::ui::widgets::file_list::format_size;
 
@@ -212,12 +213,22 @@ impl Widget for RingChart {
                 let pct_len = pct_str.len();
                 let name_max = avail.saturating_sub(pct_len + 1);
 
-                let truncated = if item.label.len() > name_max {
-                    format!("{}~", &item.label[..name_max.saturating_sub(1).max(1)])
+                let label_width = item.label.width();
+                let truncated = if label_width > name_max {
+                    let target = name_max.saturating_sub(1).max(1);
+                    let mut w = 0;
+                    let boundary = item.label.char_indices()
+                        .find(|&(_, c)| {
+                            w += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                            w > target
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap_or(item.label.len());
+                    format!("{}~", &item.label[..boundary])
                 } else {
                     item.label.clone()
                 };
-                let padding = name_max.saturating_sub(truncated.len());
+                let padding = name_max.saturating_sub(truncated.width());
 
                 let label_style = if is_sel {
                     Style::default()
@@ -236,7 +247,7 @@ impl Widget for RingChart {
 
                 let label_text = format!(" {}{:pad$} ", truncated, "", pad = padding);
                 buf.set_string(legend_x + 2, y, &label_text, label_style);
-                let pct_x = legend_x + 2 + label_text.len() as u16;
+                let pct_x = legend_x + 2 + label_text.width() as u16;
                 if pct_x + pct_str.len() as u16 <= area.x + area.width {
                     buf.set_string(pct_x, y, &pct_str, pct_style);
                 }

@@ -51,7 +51,8 @@ impl Widget for ScanProgressBar {
 }
 
 fn truncate_path(path: &str, max_width: usize) -> String {
-    if path.len() <= max_width {
+    use unicode_width::UnicodeWidthStr;
+    if path.width() <= max_width {
         return path.to_string();
     }
     if max_width < 6 {
@@ -61,7 +62,29 @@ fn truncate_path(path: &str, max_width: usize) -> String {
     let keep = max_width - 3; // for "..."
     let tail_len = keep / 2;
     let head_len = keep - tail_len;
-    format!("{}...{}", &path[..head_len], &path[path.len() - tail_len..])
+
+    // Find char boundary for head
+    let mut w = 0;
+    let head_end = path.char_indices()
+        .find(|&(_, c)| {
+            w += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            w > head_len
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(path.len());
+
+    // Find char boundary for tail
+    w = 0;
+    let tail_start = path.char_indices()
+        .rev()
+        .find(|&(_, c)| {
+            w += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            w > tail_len
+        })
+        .map(|(i, _)| i + path[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(0))
+        .unwrap_or(0);
+
+    format!("{}...{}", &path[..head_end], &path[tail_start..])
 }
 
 fn format_number(n: usize) -> String {
