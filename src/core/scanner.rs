@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashmap::DashSet;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 use crate::config::settings::Settings;
 use crate::models::node::{Node, NodeType};
@@ -20,8 +20,8 @@ pub struct Scanner {
     event_tx: EventSender,
     visited: Arc<DashSet<PathBuf>>,
     progress: Arc<ProgressTracker>,
-    settings: Settings,
-    errors: Arc<Mutex<Vec<ScanError>>>,
+    settings: Arc<Settings>,
+    errors: Arc<std::sync::Mutex<Vec<ScanError>>>,
     last_progress_time: Arc<AtomicU64>,
 }
 
@@ -33,8 +33,8 @@ impl Scanner {
             event_tx,
             visited: Arc::new(DashSet::new()),
             progress: Arc::new(ProgressTracker::new()),
-            settings,
-            errors: Arc::new(Mutex::new(Vec::new())),
+            settings: Arc::new(settings),
+            errors: Arc::new(std::sync::Mutex::new(Vec::new())),
             last_progress_time: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -53,14 +53,14 @@ impl Scanner {
             self.event_tx.clone(),
             Arc::clone(&self.visited),
             Arc::clone(&self.progress),
-            self.settings.clone(),
+            Arc::clone(&self.settings),
             Arc::clone(&self.errors),
             Arc::clone(&self.last_progress_time),
         )
         .await?;
 
         let elapsed = self.progress.elapsed();
-        let errors = self.errors.lock().await.clone();
+        let errors = self.errors.lock().unwrap().clone();
 
         let result = ScanResult {
             total_size: root_node.size,
@@ -83,6 +83,44 @@ impl Scanner {
     }
 }
 
+/// Collected directory entry from batch I/O.
+struct DirEntryData {
+    path: PathBuf,
+    name: String,
+    metadata: std::fs::Metadata,
+}
+
+/// Read all entries and their metadata from a directory in one blocking call.
+/// Returns (entries, entry_errors) or an error if the directory itself can't be read.
+fn read_dir_batch(
+    dir_path: &std::path::Path,
+) -> std::io::Result<(Vec<DirEntryData>, Vec<(PathBuf, String)>)> {
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+
+    for entry_result in std::fs::read_dir(dir_path)? {
+        match entry_result {
+            Ok(entry) => {
+                let entry_path = entry.path();
+                let entry_name = entry.file_name().to_string_lossy().to_string();
+                match std::fs::symlink_metadata(&entry_path) {
+                    Ok(meta) => entries.push(DirEntryData {
+                        path: entry_path,
+                        name: entry_name,
+                        metadata: meta,
+                    }),
+                    Err(e) => errors.push((entry_path, e.to_string())),
+                }
+            }
+            Err(e) => {
+                errors.push((dir_path.to_path_buf(), e.to_string()));
+            }
+        }
+    }
+
+    Ok((entries, errors))
+}
+
 fn scan_directory(
     path: PathBuf,
     depth: usize,
@@ -90,16 +128,12 @@ fn scan_directory(
     event_tx: EventSender,
     visited: Arc<DashSet<PathBuf>>,
     progress: Arc<ProgressTracker>,
-    settings: Settings,
-    errors: Arc<Mutex<Vec<ScanError>>>,
+    settings: Arc<Settings>,
+    errors: Arc<std::sync::Mutex<Vec<ScanError>>>,
     last_progress_time: Arc<AtomicU64>,
 ) -> Pin<Box<dyn Future<Output = anyhow::Result<Node>> + Send>> {
     Box::pin(async move {
-        let _permit = semaphore.acquire().await?;
-
         progress.increment_dirs();
-        progress.set_current_path(path.clone()).await;
-        let _ = event_tx.send(Event::DirEntered { path: path.clone() });
 
         if let Some(max_depth) = settings.max_depth {
             if depth >= max_depth {
@@ -111,15 +145,24 @@ fn scan_directory(
             }
         }
 
-        let mut read_dir = match tokio::fs::read_dir(&path).await {
-            Ok(rd) => rd,
+        // Batch I/O: read directory and all entry metadata in a single spawn_blocking.
+        // Semaphore permit is held only during I/O, then released before processing.
+        let io_result = {
+            let _permit = semaphore.acquire().await?;
+            let path_clone = path.clone();
+            tokio::task::spawn_blocking(move || read_dir_batch(&path_clone)).await?
+            // _permit drops here — released before processing entries or waiting for children
+        };
+
+        let (entries, entry_errors) = match io_result {
+            Ok(result) => result,
             Err(e) => {
                 let error_type = match e.kind() {
                     std::io::ErrorKind::PermissionDenied => ScanErrorType::PermissionDenied,
                     std::io::ErrorKind::NotFound => ScanErrorType::NotFound,
                     _ => ScanErrorType::IoError,
                 };
-                errors.lock().await.push(ScanError {
+                errors.lock().unwrap().push(ScanError {
                     path: path.clone(),
                     error_type,
                     message: e.to_string(),
@@ -137,44 +180,27 @@ fn scan_directory(
             }
         };
 
+        // Record entry-level I/O errors
+        for (err_path, err_msg) in entry_errors {
+            errors.lock().unwrap().push(ScanError {
+                path: err_path.clone(),
+                error_type: ScanErrorType::IoError,
+                message: err_msg.clone(),
+            });
+            progress.increment_errors();
+            let _ = event_tx.send(Event::ScanError {
+                path: err_path,
+                error: err_msg,
+            });
+        }
+
         let mut handles = Vec::new();
         let mut file_nodes = Vec::new();
 
-        loop {
-            let entry = match read_dir.next_entry().await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => break,
-                Err(e) => {
-                    errors.lock().await.push(ScanError {
-                        path: path.clone(),
-                        error_type: ScanErrorType::IoError,
-                        message: e.to_string(),
-                    });
-                    progress.increment_errors();
-                    continue;
-                }
-            };
-
-            let entry_path = entry.path();
-            let entry_name = entry.file_name().to_string_lossy().to_string();
-
-            let metadata = match tokio::fs::symlink_metadata(&entry_path).await {
-                Ok(m) => m,
-                Err(e) => {
-                    errors.lock().await.push(ScanError {
-                        path: entry_path.clone(),
-                        error_type: ScanErrorType::IoError,
-                        message: e.to_string(),
-                    });
-                    progress.increment_errors();
-                    let _ = event_tx.send(Event::ScanError {
-                        path: entry_path,
-                        error: e.to_string(),
-                    });
-                    continue;
-                }
-            };
-
+        for entry_data in entries {
+            let entry_path = entry_data.path;
+            let entry_name = entry_data.name;
+            let metadata = entry_data.metadata;
             let file_type = metadata.file_type();
 
             if file_type.is_symlink() {
@@ -205,7 +231,7 @@ fn scan_directory(
                 match tokio::fs::canonicalize(&entry_path).await {
                     Ok(real_path) => {
                         if !visited.insert(real_path.clone()) {
-                            errors.lock().await.push(ScanError {
+                            errors.lock().unwrap().push(ScanError {
                                 path: entry_path.clone(),
                                 error_type: ScanErrorType::SymlinkCycle,
                                 message: format!("Symlink cycle detected: {:?}", entry_path),
@@ -216,17 +242,17 @@ fn scan_directory(
                         match tokio::fs::metadata(&real_path).await {
                             Ok(resolved_meta) => {
                                 if resolved_meta.is_dir() {
-                                    let sem = Arc::clone(&semaphore);
-                                    let tx = event_tx.clone();
-                                    let vis = Arc::clone(&visited);
-                                    let prog = Arc::clone(&progress);
-                                    let sett = settings.clone();
-                                    let errs = Arc::clone(&errors);
-                                    let next_depth = depth + 1;
-                                    let lpt = Arc::clone(&last_progress_time);
-                                    let handle = tokio::spawn(
-                                        scan_directory(real_path, next_depth, sem, tx, vis, prog, sett, errs, lpt),
-                                    );
+                                    let handle = tokio::spawn(scan_directory(
+                                        real_path,
+                                        depth + 1,
+                                        Arc::clone(&semaphore),
+                                        event_tx.clone(),
+                                        Arc::clone(&visited),
+                                        Arc::clone(&progress),
+                                        Arc::clone(&settings),
+                                        Arc::clone(&errors),
+                                        Arc::clone(&last_progress_time),
+                                    ));
                                     handles.push(handle);
                                 } else {
                                     let size = resolved_meta.len();
@@ -240,15 +266,11 @@ fn scan_directory(
                                         Node::from_file(entry_path, entry_name, size, modified, inode);
                                     progress.increment_files();
                                     progress.add_size(size);
-                                    let _ = event_tx.send(Event::FileScanned {
-                                        path: node.path.clone(),
-                                        size,
-                                    });
                                     file_nodes.push(node);
                                 }
                             }
                             Err(e) => {
-                                errors.lock().await.push(ScanError {
+                                errors.lock().unwrap().push(ScanError {
                                     path: entry_path,
                                     error_type: ScanErrorType::IoError,
                                     message: e.to_string(),
@@ -258,7 +280,7 @@ fn scan_directory(
                         }
                     }
                     Err(e) => {
-                        errors.lock().await.push(ScanError {
+                        errors.lock().unwrap().push(ScanError {
                             path: entry_path,
                             error_type: ScanErrorType::IoError,
                             message: e.to_string(),
@@ -274,17 +296,17 @@ fn scan_directory(
                     continue;
                 }
 
-                let sem = Arc::clone(&semaphore);
-                let tx = event_tx.clone();
-                let vis = Arc::clone(&visited);
-                let prog = Arc::clone(&progress);
-                let sett = settings.clone();
-                let errs = Arc::clone(&errors);
-                let next_depth = depth + 1;
-                let lpt = Arc::clone(&last_progress_time);
-                let handle = tokio::spawn(
-                    scan_directory(entry_path, next_depth, sem, tx, vis, prog, sett, errs, lpt),
-                );
+                let handle = tokio::spawn(scan_directory(
+                    entry_path,
+                    depth + 1,
+                    Arc::clone(&semaphore),
+                    event_tx.clone(),
+                    Arc::clone(&visited),
+                    Arc::clone(&progress),
+                    Arc::clone(&settings),
+                    Arc::clone(&errors),
+                    Arc::clone(&last_progress_time),
+                ));
                 handles.push(handle);
             } else if file_type.is_file() {
                 let size = metadata.len();
@@ -294,13 +316,9 @@ fn scan_directory(
                 #[cfg(not(unix))]
                 let inode = None;
 
-                let node = Node::from_file(entry_path.clone(), entry_name, size, modified, inode);
+                let node = Node::from_file(entry_path, entry_name, size, modified, inode);
                 progress.increment_files();
                 progress.add_size(size);
-                let _ = event_tx.send(Event::FileScanned {
-                    path: entry_path,
-                    size,
-                });
                 file_nodes.push(node);
             } else {
                 let node = Node {
@@ -320,12 +338,12 @@ fn scan_directory(
             }
         }
 
-        // Wait for all spawned directory scans
+        // Wait for all spawned directory scans (permit already released)
         for handle in handles {
             match handle.await {
                 Ok(Ok(node)) => file_nodes.push(node),
                 Ok(Err(e)) => {
-                    errors.lock().await.push(ScanError {
+                    errors.lock().unwrap().push(ScanError {
                         path: path.clone(),
                         error_type: ScanErrorType::IoError,
                         message: e.to_string(),
@@ -333,7 +351,7 @@ fn scan_directory(
                     progress.increment_errors();
                 }
                 Err(e) => {
-                    errors.lock().await.push(ScanError {
+                    errors.lock().unwrap().push(ScanError {
                         path: path.clone(),
                         error_type: ScanErrorType::Other,
                         message: format!("Task join error: {}", e),
