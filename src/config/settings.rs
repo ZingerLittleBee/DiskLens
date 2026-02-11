@@ -19,10 +19,13 @@ impl Default for Settings {
         let cache_dir = dirs_cache_dir().unwrap_or_else(|| PathBuf::from(".disklens"));
 
         let max_concurrent_io = match detect_storage_type() {
-            StorageType::SSD => 256,
+            StorageType::SSD => 128,
             StorageType::HDD => 32,
             StorageType::Unknown => 64,
         };
+
+        // Cap concurrency to avoid "too many open files" (EMFILE)
+        let max_concurrent_io = cap_by_fd_limit(max_concurrent_io);
 
         Self {
             max_depth: None,
@@ -127,4 +130,23 @@ fn detect_storage_type_linux() -> StorageType {
     }
 
     StorageType::Unknown
+}
+
+/// Cap concurrency based on the system's file descriptor soft limit.
+/// Reserves 25% of fds for non-scan use (stdin/stdout, terminal, channels, etc.).
+fn cap_by_fd_limit(max_io: usize) -> usize {
+    #[cfg(unix)]
+    {
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let ret = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) };
+        if ret == 0 && rlim.rlim_cur != libc::RLIM_INFINITY {
+            let fd_limit = rlim.rlim_cur as usize;
+            let usable = fd_limit * 3 / 4; // reserve 25%
+            return max_io.min(usable).max(16); // at least 16
+        }
+    }
+    max_io
 }
